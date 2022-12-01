@@ -1,0 +1,1 @@
+This repository contains resources for the GPT-2 Interpretability Hackbright project.
