@@ -11,7 +11,7 @@ Refer to the below schematic for the architecture of BERT. You can ignore the cl
 graph TD
     subgraph " "
             subgraph Bert
-            Token --> |integer|TokenEmbed[Token<br>Embedding] --> AddEmbed[Add] --> Dropout --> BertBlocks[<u>BertBlock x12</u><br>BertAttention<br>BertMLP] --> Final[<u>Language Model Head</u>:<br>Linear<br>GELU<br>Layer Norm<br>Tied Unembed]--> |vocab size|Output[Logit Output]
+            Token --> |integer|TokenEmbed[Token<br>Embedding] --> AddEmbed[LayerNorm] --> Add --> Dropout --> BertBlocks[<u>BertBlock x12</u><br>BertAttention<br>BertMLP] --> Final[<u>Language Model Head</u>:<br>Linear<br>GELU<br>Layer Norm<br>Tied Unembed]--> |vocab size|Output[Logit Output]
             Position --> |integer|PosEmbed[Positional<br>Embedding] --> AddEmbed
             TokenType --> |integer|TokenTypeEmb[Token Type<br>Embedding] --> AddEmbed
             BertBlocks --> ClsHead[<u>Classification Head</u><br>First Position Only<br>Dropout<br>Linear] --> |num_classes|ClsOutput[Classification Output]
