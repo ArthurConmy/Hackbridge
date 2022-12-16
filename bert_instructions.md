@@ -1,4 +1,4 @@
-
+WARNING: these are possibly unstable and not accurate. Thanks Leo for pointing out!
 # Week 2 Day 1 - Build Your Own BERT
 
 BERT (Bidirectional Encoder Representations from Transformers) is the most famous in a line of Muppet-themed language research, originating with [ELMo](https://arxiv.org/pdf/1802.05365v2.pdf) (Embeddings from Language Models) and continuing with a series of increasingly strained acronyms:
