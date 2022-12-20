@@ -1,4 +1,5 @@
-WARNING: these are possibly unstable and not accurate. Thanks Leo for pointing out!
+# %%
+"""
 # Week 2 Day 1 - Build Your Own BERT
 
 BERT (Bidirectional Encoder Representations from Transformers) is the most famous in a line of Muppet-themed language research, originating with [ELMo](https://arxiv.org/pdf/1802.05365v2.pdf) (Embeddings from Language Models) and continuing with a series of increasingly strained acronyms:
@@ -10,28 +11,7 @@ BERT (Bidirectional Encoder Representations from Transformers) is the most famou
 
 Today you'll implement your own BERT model such that it can load the weights from a full size pretrained BERT, and use it to predict some masked tokens.
 
-## Table of Contents
-
-- [Readings](#readings)
-- [BERT architecture](#bert-architecture)
-    - [Language model vs. classifier](#language-model-vs-classifier)
-    - [Schematic](#schematic)
-- [Batched Self-Attention](#batched-self-attention)
-    - [Attention Pattern Pre-Softmax](#attention-pattern-pre-softmax)
-    - [Attention Forward Function](#attention-forward-function)
-- [Layer Normalization](#layer-normalization)
-- [Embedding](#embedding)
-- [BertMLP](#bertmlp)
-- [Bert Block](#bert-block)
-- [Putting it All Together](#putting-it-all-together)
-    - [utils.StaticModuleList](#utilsstaticmodulelist)
-- [BertLanguageModel](#bertlanguagemodel)
-- [Loading Pretrained Weights](#loading-pretrained-weights)
-- [Tokenization](#tokenization)
-    - [Vocabulary](#vocabulary)
-    - [Special Tokens](#special-tokens)
-    - [Predicting Masked Tokens](#predicting-masked-tokens)
-- [Model debugging](#model-debugging)
+<!-- toc -->
 
 ## Readings
 
@@ -57,7 +37,7 @@ graph TD
             subgraph BertClassifier
             CBertCommon[Input<br/>From BertCommon] -->|embedding_size| ClassHead[First Position Only<br/>Dropout<br/>Linear] -->|num_classes| ClsOutput[Classification<br/>Output]
             end
-
+  
     end
 ```
 
@@ -96,18 +76,20 @@ graph TD
 
 We will begin by importing necessary modules and defining `BertConfig` to store the model architecture parameters. Review the list of config entries and consider what each one means, reviewing the reading to familiarize yourself with transformer models if necessary.
 
+"""
 
-
-```python
+# %%
 import os
 from dataclasses import dataclass
 from typing import List, Optional, Union
+
 import torch as t
 import transformers
 from einops import rearrange, repeat
 from fancy_einsum import einsum
 from torch import nn
 from torch.nn import functional as F
+
 import utils
 import w2d1_test
 
@@ -140,8 +122,8 @@ class BertConfig:
 if MAIN:
     config = BertConfig()
 
-```
-
+# %%
+r"""
 ## Batched Self-Attention
 
 We're going to implement a version of self-attention that computes all sequences in a batch at once, and all heads at once. Make sure you understand how single sequence, single head attention works first, again consulting the reading to review this mechanism if you haven't already done so.
@@ -149,7 +131,7 @@ We're going to implement a version of self-attention that computes all sequences
 
 ### Attention Pattern Pre-Softmax
 
-Write the attention_pattern_pre_softmax function as specified in the diagram.
+Write the attention_pattern_pre_softmax function as specified in the diagram. 
 
 The "Scale Down" factor means dividing by the square root of the head size. Empirically, this helps training. [This article](https://github.com/BAI-Yeqi/Statistical-Properties-of-Dot-Product/blob/master/proof.pdf) gives some math to justify this, but it's not important.
 
@@ -200,7 +182,7 @@ Pre-softmax:
 
 - Apply `project_query`, `project_key`, and `project_value` to `x` to obtain `q`, `k`, and `v`.
 - rearrange `q` and `k` to split the `head * head_size` dimension apart into `head` and `head_size` dimensions. The shape should go from `(batch seq (head * head_size))` to `(batch head seq head_size)`
-- Einsum `q` and `k` to get a (batch, head, seq_q, seq_k) shape.
+- Einsum `q` and `k` to get a (batch, head, seq_q, seq_k) shape. 
 - Divide by the square root of the head size.
 
 Forward:
@@ -214,9 +196,8 @@ Forward:
 </details>
 
 Name your `Linear` layers as indicated in the class definition; otherwise the tests won't work and you'll have more trouble loading weights.
-
-
-```python
+"""
+# %%
 class BertSelfAttention(nn.Module):
     project_query: nn.Linear
     project_key: nn.Linear
@@ -224,7 +205,18 @@ class BertSelfAttention(nn.Module):
     project_output: nn.Linear
 
     def __init__(self, config: BertConfig):
-        pass
+        "SOLUTION"
+        super().__init__()
+        self.num_heads = config.num_heads
+        assert config.hidden_size % config.num_heads == 0
+        # Note total head size can be smaller when we're doing tensor parallel and only some of the heads are in this module
+        # But if it's larger then user probably forgot to specify head_size
+        assert config.head_size * config.num_heads <= config.hidden_size, "Total head size larger than hidden_size"
+        self.head_size = config.head_size
+        self.project_query = nn.Linear(config.hidden_size, config.num_heads * self.head_size)
+        self.project_key = nn.Linear(config.hidden_size, config.num_heads * self.head_size)
+        self.project_value = nn.Linear(config.hidden_size, config.num_heads * self.head_size)
+        self.project_output = nn.Linear(config.num_heads * self.head_size, config.hidden_size)
 
     def attention_pattern_pre_softmax(self, x: t.Tensor) -> t.Tensor:
         """
@@ -233,7 +225,19 @@ class BertSelfAttention(nn.Module):
 
         pattern[batch, head, q, k] should be the match between a query at sequence position q and a key at sequence position k.
         """
-        pass
+        "SOLUTION"
+        b, s, h = x.shape
+        q = self.project_query(x)
+        q = rearrange(q, "b seq (head head_size) -> b head seq head_size", head=self.num_heads)
+        # Does it feel more natural to split head and head_size along last two dims?
+        k = self.project_key(x)
+        k = rearrange(k, "b seq (head head_size) -> b head seq head_size", head=self.num_heads)
+        out = einsum("b head seq_q head_size, b head seq_k head_size -> b head seq_q seq_k", q, k)
+        # TBD lowpri: we can precompute 1/denominator and multiply it into Q before the einsum.
+        # Could write exercise for this and see if we can detect a speed difference.
+        out = out / (self.head_size**0.5)
+        assert out.shape == (b, self.num_heads, s, s)
+        return out
 
     def forward(self, x: t.Tensor, additive_attention_mask: Optional[t.Tensor] = None) -> t.Tensor:
         """
@@ -241,37 +245,83 @@ class BertSelfAttention(nn.Module):
 
         Return: (batch, seq, hidden_size)
         """
-        pass
+        "SOLUTION"
+        b, s, h = x.shape
+        attention_pattern = self.attention_pattern_pre_softmax(x)
+        if additive_attention_mask is not None:
+            attention_pattern = attention_pattern + additive_attention_mask
+        softmaxed_attention = attention_pattern.softmax(dim=-1)
+        v = self.project_value(x)
+        v = rearrange(v, "b seq (head head_size) -> b head seq head_size", head=self.num_heads)
+        combined_values = einsum(
+            "b head seq_k head_size, b head seq_q seq_k -> b head seq_q head_size",
+            v,
+            softmaxed_attention,
+        )
+        out = self.project_output(rearrange(combined_values, "b head seq head_size -> b seq (head head_size)"))
+        assert out.shape == (b, s, h)
+        return out
 
 
 if MAIN:
     w2d1_test.test_attention_pattern_pre_softmax(BertSelfAttention)
     w2d1_test.test_attention(BertSelfAttention)
 
-```
-
+# %%
+"""
 ## Layer Normalization
 
 Use the ([PyTorch docs](https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html)) for Layer Normalization to implement your own version which exactly mimics the official API. Use the biased estimator for $Var[x]$ as shown in the docs.
-
-
-```python
+"""
+# %%
 class LayerNorm(nn.Module):
     weight: nn.Parameter
     bias: nn.Parameter
 
     def __init__(
-        self, normalized_shape: Union[int, tuple, t.Size], eps=1e-05, elementwise_affine=True, device=None, dtype=None
+        self,
+        normalized_shape: Union[int, tuple, t.Size],
+        eps=1e-5,
+        elementwise_affine=True,
+        device=None,
+        dtype=None,
     ):
-        pass
+        "SOLUTION"
+        super().__init__()
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = tuple(normalized_shape)
+        self.normalize_dims = tuple(range(-1, -1 - len(self.normalized_shape), -1))
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+        if self.elementwise_affine:
+            self.weight = nn.Parameter(t.empty(self.normalized_shape, device=device, dtype=dtype))  # type: ignore
+            self.bias = nn.Parameter(t.empty(self.normalized_shape, device=device, dtype=dtype))  # type: ignore
+        else:
+            self.register_parameter("weight", None)
+            self.register_parameter("bias", None)
+        self.reset_parameters()
 
     def reset_parameters(self) -> None:
         """Initialize the weight and bias, if applicable."""
-        pass
+        "SOLUTION"
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)
+            nn.init.zeros_(self.bias)
 
     def forward(self, x: t.Tensor) -> t.Tensor:
         """x and the output should both have shape (batch, *)."""
-        pass
+        "SOLUTION"
+        # Chris: MLAB1 repo solution had .detach() here but I think that is wrong
+        mean = x.mean(dim=self.normalize_dims, keepdim=True)
+        var = x.var(dim=self.normalize_dims, keepdim=True, unbiased=False)
+
+        x = x - mean
+        x = x / ((var + self.eps) ** 0.5)
+        if self.elementwise_affine:
+            x = x * self.weight
+            x = x + self.bias
+        return x
 
 
 if MAIN:
@@ -281,16 +331,16 @@ if MAIN:
     w2d1_test.test_layernorm_exact(LayerNorm)
     w2d1_test.test_layernorm_backward(LayerNorm)
 
-```
 
+# %%
+"""
 ## Embedding
 
 Implement your version of PyTorch's `nn.Embedding` module. The PyTorch version has some extra options in the constructor, but you don't need to implement those since BERT doesn't use them.
 
 The `Parameter` should be named `weight` and initialized with normally distributed random values with a mean of 0 and std of 0.02.
-
-
-```python
+"""
+# %%
 class Embedding(nn.Module):
     num_embeddings: int
     embedding_dim: int
@@ -298,14 +348,18 @@ class Embedding(nn.Module):
 
     def __init__(self, num_embeddings: int, embedding_dim: int):
         super().__init__()
-        pass
+        "SOLUTION"
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.weight = nn.Parameter(t.randn(num_embeddings, embedding_dim) * 0.02)
 
     def forward(self, x: t.LongTensor) -> t.Tensor:
         """For each integer in the input, return that row of the embedding.
 
         Don't convert x to one-hot vectors - this works but is too slow.
         """
-        pass
+        "SOLUTION"
+        return self.weight[x]
 
     def extra_repr(self) -> str:
         return f"{self.num_embeddings}, {self.embedding_dim}"
@@ -316,14 +370,16 @@ if MAIN:
     w2d1_test.test_embedding(Embedding)
     w2d1_test.test_embedding_std(Embedding)
 
-```
 
+# %%
+"""
 ## BertMLP
 
 Make the MLP block, following the schematic. Use `nn.Dropout` for the dropout layer.
-
-
-```python
+"""
+# Chris: In MLAB1 some people said that F.dropout gave different results than nn.Dropout.
+# I wasn't able to reproduce this and AFAICT nn.Dropout just calls F.dropout, but it won't hurt to use nn.Dropout.
+# %%
 class BertMLP(nn.Module):
     first_linear: nn.Linear
     second_linear: nn.Linear
@@ -331,57 +387,82 @@ class BertMLP(nn.Module):
 
     def __init__(self, config: BertConfig):
         super().__init__()
-        pass
+        "SOLUTION"
+        self.first_linear = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.second_linear = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.dropout = nn.Dropout(config.dropout)
+        self.layer_norm = LayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
 
     def forward(self, x: t.Tensor) -> t.Tensor:
-        pass
+        "SOLUTION"
+        skip = x
+        x = self.first_linear(x)
+        x = F.gelu(x)
+        x = self.second_linear(x)
+        x = self.dropout(x)
+        x = self.layer_norm(x + skip)
+        return x
 
 
 if MAIN:
     w2d1_test.test_bert_mlp_zero_dropout(BertMLP)
     w2d1_test.test_bert_mlp_one_dropout(BertMLP)
 
-```
 
+# %%
+"""
 ## Bert Block
 
 Assemble the `BertAttention` and `BertBlock` classes following the schematic.
-
-
-```python
+"""
+# %%
 class BertAttention(nn.Module):
     self_attn: BertSelfAttention
     layer_norm: LayerNorm
 
     def __init__(self, config: BertConfig):
         super().__init__()
-        pass
+        "SOLUTION"
+        self.self_attn = BertSelfAttention(config)
+        self.dropout = nn.Dropout(config.dropout)
+        self.layer_norm = LayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
 
     def forward(self, x: t.Tensor, additive_attention_mask: Optional[t.Tensor] = None) -> t.Tensor:
-        pass
+        "SOLUTION"
+        skip = x
+        x = self.self_attn(x, additive_attention_mask)
+        x = self.dropout(x)
+        x = self.layer_norm(x + skip)
+        return x
 
 
 if MAIN:
     w2d1_test.test_bert_attention_dropout(BertAttention)
 
-
+# %%
 class BertBlock(nn.Module):
     attention: BertAttention
     mlp: BertMLP
 
     def __init__(self, config: BertConfig):
         super().__init__()
-        pass
+        "SOLUTION"
+        self.attention = BertAttention(config)
+        self.mlp = BertMLP(config)
 
     def forward(self, x: t.Tensor, additive_attention_mask: Optional[t.Tensor] = None) -> t.Tensor:
-        pass
+        "SOLUTION"
+        x = self.attention(x, additive_attention_mask)
+        x = self.mlp(x)
+        return x
 
 
 if MAIN:
     w2d1_test.test_bert_block(BertBlock)
 
-```
 
+# %%
+"""
 ## Putting it All Together
 
 Now put the pieces together. We're going to have a `BertLMHead`, noting the following:
@@ -398,9 +479,8 @@ The tokenizer will produce `one_zero_attention_mask`, but our `SelfAttention` ne
 If you use a regular `nn.ModuleList` to hold your `BertBlock`s, the typechecker can't tell they are `BertBlock`s anymore and only knows that they're `nn.Module`.
 
 We've provided a subclass `utils.StaticModuleList`, allowing us to declare in the class definition that this container really only contains `BertBlock` and no other types. The `repr` of `nn.ModuleList` also prints out all the children, which produces unreadable output for large numbers of layers; our `repr` is more concise.
-
-
-```python
+"""
+# %%
 def make_additive_attention_mask(one_zero_attention_mask: t.Tensor, big_negative_number: float = -10000) -> t.Tensor:
     """
     one_zero_attention_mask: shape (batch, seq). Contains 1 if this is a valid token and 0 if it is a padding token.
@@ -408,9 +488,11 @@ def make_additive_attention_mask(one_zero_attention_mask: t.Tensor, big_negative
 
     Out: shape (batch, heads, seq, seq). Contains 0 if attention is allowed, and big_negative_number if it is not allowed.
     """
-    pass
+    "SOLUTION"
+    return rearrange((1 - one_zero_attention_mask) * big_negative_number, "b k -> b 1 1 k")
 
 
+# %%
 class BertCommon(nn.Module):
     token_embedding: Embedding
     pos_embedding: Embedding
@@ -420,7 +502,14 @@ class BertCommon(nn.Module):
 
     def __init__(self, config: BertConfig):
         super().__init__()
-        pass
+        "SOLUTION"
+        self.config = config
+        self.token_embedding = Embedding(config.vocab_size, config.hidden_size)
+        self.pos_embedding = Embedding(config.max_position_embeddings, config.hidden_size)
+        self.token_type_embedding = Embedding(config.type_vocab_size, config.hidden_size)
+        self.layer_norm = LayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+        self.dropout = nn.Dropout(config.dropout)
+        self.blocks = utils.StaticModuleList([BertBlock(config) for _ in range(config.num_layers)])
 
     def forward(
         self,
@@ -433,10 +522,29 @@ class BertCommon(nn.Module):
         token_type_ids: (batch, seq) - only used for next sentence prediction.
         one_zero_attention_mask: (batch, seq) - only used in training. See make_additive_attention_mask.
         """
-        pass
+        "SOLUTION"
+        if token_type_ids is None:
+            token_type_ids = t.zeros_like(input_ids, dtype=t.int64)
 
-```
+        position = t.arange(input_ids.shape[1]).to(input_ids.device)
+        position = repeat(position, "n -> b n", b=input_ids.shape[0])
 
+        if one_zero_attention_mask is None:
+            additive_attention_mask = None
+        else:
+            additive_attention_mask = make_additive_attention_mask(one_zero_attention_mask)
+
+        x = self.token_embedding(input_ids)
+        x = x + self.token_type_embedding(token_type_ids)
+        x = x + self.pos_embedding(position)
+        x = self.dropout(self.layer_norm(x))
+        for block in self.blocks:
+            x = block(x, additive_attention_mask=additive_attention_mask)
+        return x
+
+
+# %%
+"""
 ## BertLanguageModel
 
 <details>
@@ -446,9 +554,8 @@ class BertCommon(nn.Module):
 Check that you're passing the correct layer norm epsilon through the network. The PyTorch default is 1e-5, but BERT used 1e-12.
 
 </details>
-
-
-```python
+"""
+# %%
 class BertLanguageModel(nn.Module):
     common: BertCommon
     lm_linear: nn.Linear
@@ -456,7 +563,13 @@ class BertLanguageModel(nn.Module):
     unembed_bias: nn.Parameter
 
     def __init__(self, config: BertConfig):
-        pass
+        "SOLUTION"
+        super().__init__()
+        self.config = config
+        self.common = BertCommon(config)
+        self.lm_linear = nn.Linear(config.hidden_size, config.hidden_size)
+        self.lm_layer_norm = LayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+        self.unembed_bias = nn.Parameter(t.zeros(config.vocab_size))
 
     def forward(
         self,
@@ -468,14 +581,21 @@ class BertLanguageModel(nn.Module):
 
         Return: shape (batch, seq, vocab_size)
         """
-        pass
+        "SOLUTION"
+        x = self.common(input_ids, token_type_ids, one_zero_attention_mask)
+        x = self.lm_linear(x)
+        x = F.gelu(x)
+        x = self.lm_layer_norm(x)
+        x = t.einsum("vh,bsh->bsv", self.common.token_embedding.weight, x)
+        x = x + self.unembed_bias
+        return x
 
 
 if MAIN:
     w2d1_test.test_bert(BertLanguageModel)
 
-```
-
+# %%
+"""
 ## Loading Pretrained Weights
 
 Now copy parameters from the pretrained BERT returned by `utils.load_pretrained_bert()` into your BERT. This is definitely tedious and it's traditional to groan about how boring this is, but is representative of real ML work and we want you to have an Authentic ML Experience.
@@ -492,23 +612,92 @@ When you copied data from the HuggingFace version, PyTorch tracked the history o
 
 </details>
 
-
-
-```python
+"""
+# %%
 def load_pretrained_weights(config: BertConfig) -> BertLanguageModel:
     hf_bert = utils.load_pretrained_bert()
-    pass
+    "SOLUTION"
+
+    def _copy(mine, theirs):
+        mine.detach().copy_(theirs)
+
+    def _copy_weight_bias(mine, theirs, transpose=False):
+        _copy(mine.weight, theirs.weight.T if transpose else theirs.weight)
+        if getattr(mine, "bias", None) is not None:
+            _copy(mine.bias, theirs.bias)
+
+    mine = BertLanguageModel(config)
+    # Let's set everything to NaN and then we'll know if we missed one.
+    for name, p in mine.named_parameters():
+        p.requires_grad = False
+        p.fill_(t.nan)
+
+    _copy_weight_bias(mine.common.token_embedding, hf_bert.bert.embeddings.word_embeddings)
+    _copy_weight_bias(mine.common.pos_embedding, hf_bert.bert.embeddings.position_embeddings)
+    _copy_weight_bias(mine.common.token_type_embedding, hf_bert.bert.embeddings.token_type_embeddings)
+    _copy_weight_bias(mine.common.layer_norm, hf_bert.bert.embeddings.LayerNorm)
+
+    # Set up type hints so our autocomplete works properly
+    from transformers.models.bert.modeling_bert import BertLayer
+
+    my_block: BertBlock
+    hf_block: BertLayer
+
+    for my_block, hf_block in zip(mine.common.blocks, hf_bert.bert.encoder.layer):  # type: ignore
+        _copy_weight_bias(my_block.attention.self_attn.project_query, hf_block.attention.self.query)
+        _copy_weight_bias(my_block.attention.self_attn.project_key, hf_block.attention.self.key)
+        _copy_weight_bias(my_block.attention.self_attn.project_value, hf_block.attention.self.value)
+        _copy_weight_bias(my_block.attention.self_attn.project_output, hf_block.attention.output.dense)
+        _copy_weight_bias(my_block.attention.layer_norm, hf_block.attention.output.LayerNorm)
+
+        _copy_weight_bias(my_block.mlp.first_linear, hf_block.intermediate.dense)
+        _copy_weight_bias(my_block.mlp.second_linear, hf_block.output.dense)
+        _copy_weight_bias(my_block.mlp.layer_norm, hf_block.output.LayerNorm)
+
+    _copy_weight_bias(mine.lm_linear, hf_bert.cls.predictions.transform.dense)
+    _copy_weight_bias(mine.lm_layer_norm, hf_bert.cls.predictions.transform.LayerNorm)
+
+    assert t.allclose(
+        hf_bert.bert.embeddings.word_embeddings.weight,
+        hf_bert.cls.predictions.decoder.weight,
+    ), "Embed and unembed weight should be the same"
+    # "Cannot assign non-leaf Tensor to parameter 'weight'"
+    # mine.unembed.weight = mine.token_embedding.weight
+
+    # Won't remain tied
+    # mine.unembed.weight = hf_bert.bert.embeddings.word_embeddings.weight
+
+    # Won't remain tied during training
+    # mine.unembed.weight.copy_(mine.token_embedding.weight)
+    # mine.unembed.bias.copy_(hf_bert.cls.predictions.decoder.bias)
+
+    # I think works but maybe less good if others have ref to the old Parameter?
+    # mine.unembed_bias = nn.Parameter(input_embeddings.weight.clone())
+
+    mine.unembed_bias.detach().copy_(hf_bert.cls.predictions.decoder.bias)
+
+    fail = False
+    for name, p in mine.named_parameters():
+        if t.isnan(p).any():
+            print(f"Forgot to initialize: {name}")
+            fail = True
+        else:
+            p.requires_grad_(True)
+    assert not fail
+    return mine
 
 
 if MAIN:
     my_bert = load_pretrained_weights(config)
-    for (name, p) in my_bert.named_parameters():
+
+    for name, p in my_bert.named_parameters():
         assert (
             p.is_leaf
         ), "Parameter {name} is not a leaf node, which will cause problems in training. Try adding detach() somewhere."
 
-```
 
+# %%
+"""
 ## Tokenization
 
 We're going to use a HuggingFace tokenizer for now to encode text into a sequence of tokens that our model can use. The tokenizer has to match the model - our model was trained with the `bert-base-cased` tokenizer which is case-sensitive. If you tried to use the `bert-base-uncased` tokenizer which is case-insensitive, it wouldn't work at all.
@@ -533,25 +722,34 @@ Tips:
 - The model should be in evaluation mode for predictions - this disables dropout and makes the predictions deterministic.
 - If your model gives different predictions than the HuggingFace section, proceed to the next section on debugging.
 
-
-
-```python
+"""
+# %%
 def predict(model: BertLanguageModel, tokenizer, text: str, k=15) -> List[List[str]]:
     """
     Return a list of k strings for each [MASK] in the input.
     """
-    pass
+    "SOLUTION"
+    model.eval()
+    input_ids = tokenizer(text, return_tensors="pt")["input_ids"]
+    out = model(input_ids)
+    preds = out[input_ids == tokenizer.mask_token_id]
+    num_masks, vocab = preds.shape
+    tops = preds.topk(k, dim=-1).indices
+    assert tops.shape == (num_masks, k)
+    return [[tokenizer.decode(t) for t in mask] for mask in tops]
 
 
-if MAIN and (not IS_CI):
+if MAIN and not IS_CI:
     tokenizer = transformers.AutoTokenizer.from_pretrained("bert-base-cased")
     w2d1_test.test_bert_prediction(predict, my_bert, tokenizer)
+
     your_text = "The Answer to the Ultimate Question of Life, The Universe, and Everything is [MASK]."
     predictions = predict(my_bert, tokenizer, your_text)
     print("Model predicted: \n", "\n".join(map(str, predictions)))
 
-```
 
+# %%
+"""
 ## Model debugging
 
 If your model works correctly at this point then congratulations, you can skip this section.
@@ -568,16 +766,55 @@ You won't always have a reference implementation, but given that you do courtesy
 
 Read the [documentation](https://pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_forward_hook.html) for `register_forward_hook` on a `nn.Module` and try logging the input and output of each block on your model and the HuggingFace version. Note that you can use your forward hook to access model parameters upon the completion of a `forward()` output and use these parameters in ordinary Python data structures. Also, you may use `utils.allclose_atol()` to, as with many tests that you have already encountered, check whether two tensors have values within a specified tolerance.
 
+"""
+# %%
+if MAIN and not IS_CI:
+    if "SOLUTION":
+        input_ids = tokenizer("Hello there", return_tensors="pt")["input_ids"]
+        expected = []
+
+        def hook(module, inputs, output):
+            x = inputs[0]
+            out = output[0]
+            expected.append((x, out))
+
+        hf_bert = utils.load_pretrained_bert()
+        hf_bert.apply(utils.remove_hooks)
+        hf_bert.eval()
+        for layer in hf_bert.bert.encoder.layer:
+            layer.attention.register_forward_hook(hook)  # type: ignore
+            layer.register_forward_hook(hook)
+        hf_bert(input_ids)
+        actual = []
+
+        def my_hook(module, inputs, output):
+            x = inputs[0]
+            actual.append((x, output))
+
+        my_bert.eval()
+        my_bert.apply(utils.remove_hooks)
+        for layer in my_bert.common.blocks:
+            layer.attention.register_forward_hook(my_hook)  # type: ignore
+            layer.register_forward_hook(my_hook)
+        my_bert(input_ids)
+
+        assert len(expected) == len(actual)
+        for i, ((ex_in, ex_out), (ac_in, ac_out)) in enumerate(zip(expected, actual)):
+            print(f"Step {i} input:", end="")
+            utils.allclose_atol(ac_in, ex_in, atol=1e-5)
+            print("OK")
+            print(f"Step {i} output:", end="")
+            utils.allclose_atol(ac_out, ex_out, atol=1e-5)
+            print("OK")
+        else:
+            print("All Matching!")
 
 
-```python
-if MAIN and (not IS_CI):
-    "TODO: YOUR CODE HERE"
-
-```
-
+# %%
+"""
 # Bonus
 
 Congratulations on finishing the day's content! No bonus section today.
 
 Tomorrow you'll have the same partner, so feel free to get started on W2D2. Or, play with your BERT and post your favorite completions in the Slack!
+"""
