@@ -1,3 +1,3 @@
-WARNING: the BERT exercise is unstable, possibly wrong. Thanks Leo! It should be up by Sunday, PLEASE CONTACT ARTHUR IF YOU WANT THIS STABLE!!!
+View the markdown instruction, and then use https://colab.research.google.com/github/ArthurConmy/Hackbridge/blob/main/notebook.ipynb to build a BERT!
 
 This repository contains resources for the GPT-2 Interpretability Hackbridge project.
